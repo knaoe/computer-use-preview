@@ -23,8 +23,13 @@ class BrowserbaseComputer(PlaywrightComputer):
         self,
         screen_size: tuple[int, int],
         initial_url: str = "https://www.google.com",
+        slide_audio_config=None,
     ):
-        super().__init__(screen_size, initial_url)
+        super().__init__(
+            screen_size,
+            initial_url,
+            slide_audio_config=slide_audio_config,
+        )
 
     def __enter__(self):
         print("Creating session...")
@@ -60,6 +65,7 @@ class BrowserbaseComputer(PlaywrightComputer):
         self._page.goto(self._initial_url)
 
         self._context.on("page", self._handle_new_page)
+        self._start_slide_audio_presenter()
 
         termcolor.cprint(
             f"Session started at https://browserbase.com/sessions/{self._session.id}",
@@ -69,6 +75,9 @@ class BrowserbaseComputer(PlaywrightComputer):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._slide_presenter:
+            self._slide_presenter.stop()
+            self._slide_presenter = None
         self._page.close()
 
         if self._context:

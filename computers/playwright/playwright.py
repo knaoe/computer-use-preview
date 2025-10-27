@@ -12,17 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
-import termcolor
-import time
 import os
 import sys
-from ..computer import (
-    Computer,
-    EnvState,
-)
+import time
+from typing import Literal, Optional
+
 import playwright.sync_api
+import termcolor
 from playwright.sync_api import sync_playwright
-from typing import Literal
+
+from ..computer import Computer, EnvState
+from presentation.slide_audio import SlideAudioConfig, SlideAudioError, SlideAudioPresenter
 
 # Define a mapping from the user-friendly key names to Playwright's expected key names.
 # Playwright is generally good with case-insensitivity for these, but it's best to be canonical.
@@ -81,11 +81,14 @@ class PlaywrightComputer(Computer):
         initial_url: str = "https://www.google.com",
         search_engine_url: str = "https://www.google.com",
         highlight_mouse: bool = False,
+        slide_audio_config: Optional[SlideAudioConfig] = None,
     ):
         self._initial_url = initial_url
         self._screen_size = screen_size
         self._search_engine_url = search_engine_url
         self._highlight_mouse = highlight_mouse
+        self._slide_audio_config = slide_audio_config
+        self._slide_presenter: Optional[SlideAudioPresenter] = None
 
     def _handle_new_page(self, new_page: playwright.sync_api.Page):
         """The Computer Use model only supports a single tab at the moment.
@@ -124,6 +127,8 @@ class PlaywrightComputer(Computer):
 
         self._context.on("page", self._handle_new_page)
 
+        self._start_slide_audio_presenter()
+
         termcolor.cprint(
             f"Started local playwright.",
             color="green",
@@ -132,6 +137,9 @@ class PlaywrightComputer(Computer):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._slide_presenter:
+            self._slide_presenter.stop()
+            self._slide_presenter = None
         if self._context:
             self._context.close()
         try:
@@ -146,6 +154,29 @@ class PlaywrightComputer(Computer):
                 raise
 
         self._playwright.stop()
+
+    def _start_slide_audio_presenter(self) -> None:
+        if not self._slide_audio_config or not self._slide_audio_config.enabled:
+            return
+        try:
+            self._slide_presenter = SlideAudioPresenter(
+                page=self._page,
+                config=self._slide_audio_config,
+                status_callback=lambda message: termcolor.cprint(message, color="green", attrs=["bold"]),
+            )
+            self._slide_presenter.start()
+        except SlideAudioError as exc:
+            termcolor.cprint(
+                f"Failed to initialize slide audio presenter: {exc}",
+                color="red",
+                attrs=["bold"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            termcolor.cprint(
+                f"Unexpected error while starting slide audio presenter: {exc}",
+                color="red",
+                attrs=["bold"],
+            )
 
     def open_web_browser(self) -> EnvState:
         return self.current_state()
@@ -305,7 +336,23 @@ class PlaywrightComputer(Computer):
         # Add a manual sleep to make sure the page has finished rendering.
         time.sleep(0.5)
         screenshot_bytes = self._page.screenshot(type="png", full_page=False)
+        if self._slide_presenter and self._slide_audio_config.debug:
+            self._slide_presenter.process(screenshot=screenshot_bytes)
         return EnvState(screenshot=screenshot_bytes, url=self._page.url)
+
+    def narrate_text(self, text: str, source: str = "external") -> None:
+        if not self._slide_presenter:
+            return
+        if not text:
+            return
+        url = None
+        if self._page and not self._page.is_closed():
+            url = self._page.url
+        self._slide_presenter.ingest_external_text(
+            text=text,
+            source=source,
+            url=url,
+        )
 
     def screen_size(self) -> tuple[int, int]:
         viewport_size = self._page.viewport_size

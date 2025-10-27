@@ -11,11 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import hashlib
+import json
 import os
 from typing import Literal, Optional, Union, Any
 from google import genai
 from google.genai import types
 import termcolor
+from PIL import Image
+import io
 from google.genai.types import (
     Part,
     GenerateContentConfig,
@@ -53,6 +57,32 @@ console = Console()
 # Built-in Computer Use tools will return "EnvState".
 # Custom provided functions will return "dict".
 FunctionResponseT = Union[EnvState, dict]
+
+# Maximum width for screenshots sent to models (to reduce token cost)
+MAX_SCREENSHOT_WIDTH = 800
+
+
+def resize_screenshot(screenshot_bytes: bytes, max_width: int = MAX_SCREENSHOT_WIDTH) -> bytes:
+    """Resize screenshot to reduce token cost while maintaining aspect ratio."""
+    img = Image.open(io.BytesIO(screenshot_bytes))
+    original_width, original_height = img.size
+
+    # Only resize if image is wider than max_width
+    if original_width <= max_width:
+        return screenshot_bytes
+
+    # Calculate new height maintaining aspect ratio
+    aspect_ratio = original_height / original_width
+    new_width = max_width
+    new_height = int(new_width * aspect_ratio)
+
+    # Resize using high-quality Lanczos filter
+    img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    # Convert back to bytes
+    output = io.BytesIO()
+    img_resized.save(output, format='PNG')
+    return output.getvalue()
 
 
 def multiply_numbers(x: float, y: float) -> dict:
@@ -114,6 +144,10 @@ class BrowserAgent:
                 types.Tool(function_declarations=custom_functions),
             ],
         )
+        self._flash_narration_model = os.environ.get(
+            "FLASH_NARRATION_MODEL", "gemini-2.5-flash"
+        )
+        self._narration_cache: set[str] = set()
 
     def handle_action(self, action: types.FunctionCall) -> FunctionResponseT:
         """Handles the action and returns the environment state."""
@@ -327,6 +361,13 @@ class BrowserAgent:
             else:
                 fc_result = self.handle_action(function_call)
             if isinstance(fc_result, EnvState):
+                self._maybe_request_flash_narration(
+                    env_state=fc_result,
+                    function_call=function_call,
+                    reasoning=reasoning,
+                )
+                # Resize screenshot before sending to Computer Use model
+                resized_screenshot = resize_screenshot(fc_result.screenshot)
                 function_responses.append(
                     FunctionResponse(
                         name=function_call.name,
@@ -337,7 +378,7 @@ class BrowserAgent:
                         parts=[
                             types.FunctionResponsePart(
                                 inline_data=types.FunctionResponseBlob(
-                                    mime_type="image/png", data=fc_result.screenshot
+                                    mime_type="image/png", data=resized_screenshot
                                 )
                             )
                         ],
@@ -385,6 +426,170 @@ class BrowserAgent:
                                 part.function_response.parts = None
 
         return "CONTINUE"
+
+    def _maybe_request_flash_narration(
+        self,
+        env_state: EnvState,
+        function_call: types.FunctionCall,
+        reasoning: Optional[str],
+    ) -> None:
+        if (
+            not env_state
+            or not env_state.screenshot
+            or not self._flash_narration_model
+        ):
+            return
+
+        digest = hashlib.sha1(env_state.screenshot).hexdigest()
+        if digest in self._narration_cache:
+            if self._verbose:
+                termcolor.cprint(
+                    f"[Narration] Skipping cached screenshot for {function_call.name}.",
+                    color="cyan",
+                )
+            return
+
+        if self._verbose:
+            termcolor.cprint(
+                f"[Narration] Evaluating screenshot for {function_call.name}.",
+                color="cyan",
+            )
+
+        prompt_lines = [
+            "You are a professional presenter delivering a live presentation to an engaged audience.",
+            "IMPORTANT: Only narrate when viewing an ACTIVE SLIDESHOW in presentation mode (full-screen slides).",
+            "DO NOT narrate for:",
+            "- Slide editing interfaces or thumbnails",
+            "- Browser navigation pages (Google homepage, search results, etc.)",
+            "- Loading screens or generic UI",
+            "- Google Slides interface BEFORE entering slideshow mode",
+            "- Menu bars, toolbars, or any non-presentation content",
+            "",
+            "When you DO narrate (only in active slideshow mode):",
+            "- Open with an engaging hook or transition that connects to the presentation flow",
+            "- Explain the key concept in your own words with context and meaning",
+            "- Use natural, conversational Japanese as if speaking directly to the audience",
+            "- Add brief examples or implications when it helps understanding",
+            "- Keep it concise (2-4 sentences) but impactful",
+            "",
+            'Respond ONLY with JSON: {"should_narrate": true|false, "script": "..."}.',
+            "Leave script empty when should_narrate is false.",
+        ]
+
+        context_lines: list[str] = []
+        if self._query:
+            context_lines.append(f"Original task: {self._query}")
+        context_lines.append(f"Latest function: {function_call.name}")
+        prompt_lines.append("Context:\n" + "\n".join(context_lines))
+
+        # Resize screenshot before sending to flash model
+        resized_screenshot = resize_screenshot(env_state.screenshot)
+
+        # Log image resolution for debugging
+        if self._verbose:
+            try:
+                original_img = Image.open(io.BytesIO(env_state.screenshot))
+                resized_img = Image.open(io.BytesIO(resized_screenshot))
+                termcolor.cprint(
+                    f"[Narration] Screenshot resolution: {original_img.size[0]}x{original_img.size[1]} → {resized_img.size[0]}x{resized_img.size[1]} pixels",
+                    color="cyan",
+                )
+            except Exception:
+                pass
+
+        parts = [
+            Part(text="\n".join(prompt_lines)),
+            Part.from_bytes(mime_type="image/png", data=resized_screenshot),
+        ]
+        try:
+            response = self._client.models.generate_content(
+                model=self._flash_narration_model,
+                contents=[Content(role="user", parts=parts)],
+                config=GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=2000,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._verbose:
+                termcolor.cprint(
+                    f"Flash narration request failed: {exc}",
+                    color="yellow",
+                )
+            return
+
+        text = None
+        if response.candidates:
+            text = self.get_text(response.candidates[0])
+        if self._verbose:
+            termcolor.cprint(
+                f"[Narration] flash raw response: {text}",
+                color="cyan",
+            )
+        if not text:
+            return
+
+        parsed = self._parse_flash_response(text)
+        if parsed is None:
+            if self._verbose:
+                termcolor.cprint(
+                    f"Unexpected narration response: {text}",
+                    color="yellow",
+                )
+            return
+
+        should_narrate = bool(parsed.get("should_narrate"))
+        script = (parsed.get("script") or "").strip()
+        if not should_narrate or not script:
+            if self._verbose:
+                termcolor.cprint(
+                    "[Narration] Flash model chose not to speak.",
+                    color="cyan",
+                )
+            self._narration_cache.add(digest)
+            return
+
+        try:
+            self._browser_computer.narrate_text(script, source="flash")
+            if self._verbose:
+                excerpt = script if len(script) < 120 else script[:117] + "..."
+                termcolor.cprint(
+                    f"[Narration] Speaking flash script: {excerpt}",
+                    color="green",
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._verbose:
+                termcolor.cprint(
+                    f"Failed to narrate flash script: {exc}",
+                    color="yellow",
+                )
+        finally:
+            self._narration_cache.add(digest)
+
+    def _parse_flash_response(self, text: str) -> Optional[dict[str, Any]]:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return None
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = cleaned[start : end + 1]
+            try:
+                return json.loads(snippet)
+            except json.JSONDecodeError:
+                return None
+        return None
 
     def _get_safety_confirmation(
         self, safety: dict[str, Any]

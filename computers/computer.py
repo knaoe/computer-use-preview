@@ -123,3 +123,7 @@ class Computer(abc.ABC):
     @abc.abstractmethod
     def current_state(self) -> EnvState:
         """Returns the current state of the current webpage."""
+
+    @abc.abstractmethod
+    def narrate_text(self, text: str, source: str = "external") -> None:
+        """Optionally narrates external text, such as model reasoning."""

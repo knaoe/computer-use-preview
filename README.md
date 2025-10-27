@@ -129,6 +129,26 @@ The `main.py` script is the command-line interface (CLI) for running the browser
 | `--env` | The computer use environment to use. Must be one of the following: `playwright`, or `browserbase` | No | N/A | All |
 | `--initial_url` | The initial URL to load when the browser starts. | No | https://www.google.com | All |
 | `--highlight_mouse` | If specified, the agent will attempt to highlight the mouse cursor's position in the screenshots. This is useful for visual debugging. | No | False (not highlighted) | `playwright` |
+| `--slide-audio` | Enable automatic narration for presentation slides (see below for advanced options). | No | False | All |
+
+#### Slide Audio Narration
+
+You can have the agent narrate browser-based presentations in real time. Instead of scraping the DOM, every screenshot is routed to a lightweight Gemini `gemini-2.5-flash` prompt that decides whether to speak and, when appropriate, returns the narration script.
+
+- macOS users can rely on the built-in `say` command; it is automatically detected when you pass `--slide-audio`.
+- Use `--slide-audio-warmup "Testing slide narration"` to trigger a short macOS `say` preview right after the browser session starts.
+- Additional controls include `--slide-audio-voice`, `--slide-audio-rate`, `--slide-audio-cooldown`, and `--slide-audio-debug`.
+- Override the flash model with the `FLASH_NARRATION_MODEL` environment variable if you need a different Gemini variant.
+
+Example command to validate narration with macOS `say`:
+
+```bash
+python main.py \
+  --query "Open my Google Slides deck and move through the slides" \
+  --env playwright \
+  --slide-audio \
+  --slide-audio-warmup "Slide narration is ready via macOS say."
+```
 
 ### Environment Variables
 

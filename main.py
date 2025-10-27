@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import os
-
 from agent import BrowserAgent
 from computers import BrowserbaseComputer, PlaywrightComputer
+from presentation.slide_audio import SlideAudioConfig
 
 
 PLAYWRIGHT_SCREEN_SIZE = (1440, 900)
@@ -54,18 +53,77 @@ def main() -> int:
         default='gemini-2.5-computer-use-preview-10-2025',
         help="Set which main model to use.",
     )
+    parser.add_argument(
+        "--slide-audio",
+        action="store_true",
+        default=False,
+        help="Enable real-time narration for presentation slides.",
+    )
+    parser.add_argument(
+        "--slide-audio-backend",
+        type=str,
+        choices=("say",),
+        default="say",
+        help="Speech backend to use for slide narration.",
+    )
+    parser.add_argument(
+        "--slide-audio-voice",
+        type=str,
+        default=None,
+        help="Optional voice override for slide narration (backend dependent).",
+    )
+    parser.add_argument(
+        "--slide-audio-rate",
+        type=int,
+        default=None,
+        help="Optional speech rate override for slide narration.",
+    )
+    parser.add_argument(
+        "--slide-audio-cooldown",
+        type=float,
+        default=2.0,
+        help="Minimum seconds between narrations of the same slide.",
+    )
+    parser.add_argument(
+        "--slide-audio-warmup",
+        type=str,
+        default=None,
+        help="Optional phrase to play immediately after narration initializes.",
+    )
+    parser.add_argument(
+        "--slide-audio-debug",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging for slide narration.",
+    )
     args = parser.parse_args()
+
+    slide_audio_config = None
+    if args.slide_audio:
+        config_kwargs = dict(
+            enabled=True,
+            backend=args.slide_audio_backend,
+            voice=args.slide_audio_voice,
+            rate=args.slide_audio_rate,
+            debug=args.slide_audio_debug,
+            cooldown_seconds=args.slide_audio_cooldown,
+        )
+        if args.slide_audio_warmup is not None:
+            config_kwargs["warmup_phrase"] = args.slide_audio_warmup
+        slide_audio_config = SlideAudioConfig(**config_kwargs)
 
     if args.env == "playwright":
         env = PlaywrightComputer(
             screen_size=PLAYWRIGHT_SCREEN_SIZE,
             initial_url=args.initial_url,
             highlight_mouse=args.highlight_mouse,
+            slide_audio_config=slide_audio_config,
         )
     elif args.env == "browserbase":
         env = BrowserbaseComputer(
             screen_size=PLAYWRIGHT_SCREEN_SIZE,
-            initial_url=args.initial_url
+            initial_url=args.initial_url,
+            slide_audio_config=slide_audio_config,
         )
     else:
         raise ValueError("Unknown environment: ", args.env)
