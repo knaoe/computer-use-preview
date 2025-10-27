@@ -118,6 +118,16 @@ class BrowserAgent:
             )
         ]
 
+        # Token usage tracking
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cost = 0.0
+
+        # Pricing for Gemini models (USD per 1M tokens)
+        # Adjust these values based on your model pricing
+        self._input_token_price = 1.25  # $1.25 per 1M input tokens
+        self._output_token_price = 5.0  # $5.00 per 1M output tokens
+
         # Exclude any predefined functions here.
         excluded_predefined_functions = []
 
@@ -227,6 +237,48 @@ class BrowserAgent:
         else:
             raise ValueError(f"Unsupported function: {action}")
 
+    def _log_token_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Log token usage and cost for this turn and cumulative totals."""
+        # Calculate cost for this turn
+        turn_cost = (input_tokens * self._input_token_price / 1_000_000) + \
+                    (output_tokens * self._output_token_price / 1_000_000)
+
+        # Update cumulative totals
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        self._total_cost += turn_cost
+
+        # Create a table for token usage display
+        token_table = Table(show_header=True, header_style="bold yellow", expand=True)
+        token_table.add_column("Metric", style="cyan")
+        token_table.add_column("This Turn", justify="right", style="green")
+        token_table.add_column("Cumulative", justify="right", style="magenta")
+
+        token_table.add_row(
+            "Input Tokens",
+            f"{input_tokens:,}",
+            f"{self._total_input_tokens:,}"
+        )
+        token_table.add_row(
+            "Output Tokens",
+            f"{output_tokens:,}",
+            f"{self._total_output_tokens:,}"
+        )
+        token_table.add_row(
+            "Total Tokens",
+            f"{input_tokens + output_tokens:,}",
+            f"{self._total_input_tokens + self._total_output_tokens:,}"
+        )
+        token_table.add_row(
+            "Cost (USD)",
+            f"${turn_cost:.6f}",
+            f"${self._total_cost:.6f}"
+        )
+
+        if self._verbose:
+            console.print(token_table)
+            print()
+
     def get_model_response(
         self, max_retries=5, base_delay_s=1
     ) -> types.GenerateContentResponse:
@@ -237,6 +289,14 @@ class BrowserAgent:
                     contents=self._contents,
                     config=self._generate_content_config,
                 )
+
+                # Log token usage if available
+                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                    usage = response.usage_metadata
+                    input_tokens = getattr(usage, 'prompt_token_count', 0)
+                    output_tokens = getattr(usage, 'candidates_token_count', 0)
+                    self._log_token_usage(input_tokens, output_tokens)
+
                 return response  # Return response on success
             except Exception as e:
                 print(e)
@@ -609,10 +669,39 @@ class BrowserAgent:
             return "TERMINATE"
         return "CONTINUE"
 
+    def _log_session_summary(self) -> None:
+        """Log final session summary with total token usage and cost."""
+        if not self._verbose:
+            return
+
+        summary_table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            title="[bold yellow]Session Summary[/bold yellow]",
+            expand=True
+        )
+        summary_table.add_column("Metric", style="cyan")
+        summary_table.add_column("Total", justify="right", style="bold green")
+
+        summary_table.add_row("Input Tokens", f"{self._total_input_tokens:,}")
+        summary_table.add_row("Output Tokens", f"{self._total_output_tokens:,}")
+        summary_table.add_row(
+            "Total Tokens",
+            f"{self._total_input_tokens + self._total_output_tokens:,}"
+        )
+        summary_table.add_row("Total Cost (USD)", f"${self._total_cost:.6f}")
+
+        console.print()
+        console.print(summary_table)
+        console.print()
+
     def agent_loop(self):
         status = "CONTINUE"
         while status == "CONTINUE":
             status = self.run_one_iteration()
+
+        # Log session summary at the end
+        self._log_session_summary()
 
     def denormalize_x(self, x: int) -> int:
         return int(x / 1000 * self._browser_computer.screen_size()[0])
