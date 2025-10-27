@@ -1,5 +1,6 @@
 import dataclasses
 import hashlib
+import os
 import shutil
 import subprocess
 import time
@@ -20,6 +21,10 @@ class SpeechSynthesizer(Protocol):
 
     def stop(self) -> None: ...
 
+    def send_video_frame(self, frame_data: bytes, mime_type: str = "image/png") -> None:
+        """Optional: Send video frame for native audio models."""
+        ...
+
 
 @dataclasses.dataclass(slots=True)
 class SlideAudioConfig:
@@ -34,6 +39,10 @@ class SlideAudioConfig:
     warmup_phrase: Optional[str] = "Slide audio presenter is ready."
     debug: bool = False
     cooldown_seconds: float = 2.0
+    # Native audio specific settings
+    native_audio_model: str = "gemini-2.5-flash-native-audio-preview-09-2025"
+    native_audio_system_instruction: Optional[str] = None
+    native_audio_frame_rate: float = 1.0  # frames per second to send
 
     def validate(self) -> None:
         if self.min_chars <= 0:
@@ -44,6 +53,8 @@ class SlideAudioConfig:
             raise ValueError("cooldown_seconds cannot be negative")
         if not self.backend:
             raise ValueError("backend must be provided")
+        if self.native_audio_frame_rate <= 0:
+            raise ValueError("native_audio_frame_rate must be positive")
 
 
 class _OSSaySpeechSynthesizer:
@@ -93,11 +104,93 @@ class _OSSaySpeechSynthesizer:
                 self._current_process.kill()
         self._current_process = None
 
+    def send_video_frame(self, frame_data: bytes, mime_type: str = "image/png") -> None:
+        """Not supported for macOS say backend."""
+        pass
 
-def _create_synthesizer(config: SlideAudioConfig) -> SpeechSynthesizer:
+
+class _GeminiNativeAudioSynthesizer:
+    """Speech synthesis using Gemini Native Audio Live API."""
+
+    def __init__(self, config: SlideAudioConfig, token_callback: Optional[Callable[[int, int], None]] = None) -> None:
+        try:
+            from presentation.native_audio_presenter import NativeAudioPresenter
+        except ImportError as e:
+            raise SlideAudioError(
+                "Failed to import native_audio_presenter. "
+                "Make sure pyaudio is installed: pip install pyaudio"
+            ) from e
+
+        self._config = config
+        self._debug = config.debug
+
+        # Get API credentials
+        api_key = os.environ.get("GEMINI_API_KEY")
+        use_vertexai = os.environ.get("USE_VERTEXAI", "0").lower() in ["true", "1"]
+        project = os.environ.get("VERTEXAI_PROJECT")
+        location = os.environ.get("VERTEXAI_LOCATION")
+
+        # Initialize presenter
+        self._presenter = NativeAudioPresenter(
+            api_key=api_key,
+            model=config.native_audio_model,
+            system_instruction=config.native_audio_system_instruction or self._get_default_instruction(),
+            debug=config.debug,
+            use_vertexai=use_vertexai,
+            project=project,
+            location=location,
+            token_callback=token_callback,
+        )
+        self._presenter.start()
+
+    def _get_default_instruction(self) -> str:
+        return """
+あなたはプロフェッショナルなプレゼンターです。
+現在、スライドショーのプレゼンテーションを行っています。
+
+スライドが表示されたら、以下のように発表してください：
+1. スライドの内容を簡潔に説明する
+2. 自然な日本語で、聴衆に語りかけるように話す
+3. 重要なポイントを強調する
+4. 各スライドは2-4文程度で説明する
+
+重要: 以下の場合は発表しないでください:
+- スライド編集画面やサムネイル表示
+- ブラウザのナビゲーションページ (Google検索など)
+- ローディング画面
+- プレゼンテーションモードに入る前のGoogle Slidesインターフェース
+
+プレゼンテーションモード (フルスクリーンのスライド表示) のときのみ発表してください。
+"""
+
+    def speak(self, text: str, *, interrupt: bool = True, wait: bool = False) -> None:
+        """Not used for native audio - the model generates speech directly from video."""
+        if self._debug:
+            termcolor.cprint(
+                f"[Native Audio] speak() called but ignored (model generates audio from video)",
+                color="yellow"
+            )
+
+    def send_video_frame(self, frame_data: bytes, mime_type: str = "image/png") -> None:
+        """Send a video frame to the model for processing."""
+        if self._debug:
+            termcolor.cprint(
+                f"[Native Audio] Sending frame ({len(frame_data)} bytes)",
+                color="cyan"
+            )
+        self._presenter.send_video_frame(frame_data, mime_type)
+
+    def stop(self) -> None:
+        """Stop the native audio presenter."""
+        self._presenter.stop()
+
+
+def _create_synthesizer(config: SlideAudioConfig, token_callback: Optional[Callable[[int, int], None]] = None) -> SpeechSynthesizer:
     backend = config.backend.lower()
     if backend == "say":
         return _OSSaySpeechSynthesizer(config.voice, config.rate, config.debug)
+    elif backend == "native-audio":
+        return _GeminiNativeAudioSynthesizer(config, token_callback)
     raise SlideAudioError(f"Unsupported speech backend: {config.backend}")
 
 
@@ -109,12 +202,13 @@ class SlideAudioPresenter:
         page: Page,
         config: SlideAudioConfig,
         status_callback: Optional[Callable[[str], None]] = None,
+        token_callback: Optional[Callable[[int, int], None]] = None,
     ) -> None:
         self._page = page
         self._config = config
         self._config.validate()
         self._status_callback = status_callback or (lambda message: termcolor.cprint(message, color="green"))
-        self._synthesizer = _create_synthesizer(config)
+        self._synthesizer = _create_synthesizer(config, token_callback)
         self._active = False
         self._last_hash: Optional[str] = None
         self._last_spoken_at: float = 0.0

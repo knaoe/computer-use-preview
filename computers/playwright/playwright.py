@@ -14,6 +14,7 @@
 import logging
 import os
 import sys
+import threading
 import time
 from typing import Literal, Optional
 
@@ -89,6 +90,7 @@ class PlaywrightComputer(Computer):
         self._highlight_mouse = highlight_mouse
         self._slide_audio_config = slide_audio_config
         self._slide_presenter: Optional[SlideAudioPresenter] = None
+        self._last_frame_time = 0.0
 
     def _handle_new_page(self, new_page: playwright.sync_api.Page):
         """The Computer Use model only supports a single tab at the moment.
@@ -177,6 +179,28 @@ class PlaywrightComputer(Computer):
                 color="red",
                 attrs=["bold"],
             )
+
+    def _send_video_frame_if_needed(self, screenshot: bytes) -> None:
+        """Send video frame to native audio presenter if needed."""
+        if not self._slide_audio_config or self._slide_audio_config.backend != "native-audio":
+            return
+
+        if not self._slide_presenter or not hasattr(self._slide_presenter._synthesizer, "send_video_frame"):
+            return
+
+        current_time = time.time()
+        frame_interval = 1.0 / self._slide_audio_config.native_audio_frame_rate
+
+        # Check if enough time has passed since last frame
+        if current_time - self._last_frame_time >= frame_interval:
+            self._slide_presenter._synthesizer.send_video_frame(screenshot, "image/png")
+            self._last_frame_time = current_time
+
+            if self._slide_audio_config.debug:
+                termcolor.cprint(
+                    f"[Video Capture] Sent frame ({len(screenshot)} bytes)",
+                    color="cyan"
+                )
 
     def open_web_browser(self) -> EnvState:
         return self.current_state()
@@ -336,7 +360,11 @@ class PlaywrightComputer(Computer):
         # Add a manual sleep to make sure the page has finished rendering.
         time.sleep(0.5)
         screenshot_bytes = self._page.screenshot(type="png", full_page=False)
-        if self._slide_presenter and self._slide_audio_config.debug:
+
+        # Send video frame to native audio presenter if enabled
+        self._send_video_frame_if_needed(screenshot_bytes)
+
+        if self._slide_presenter and self._slide_audio_config and self._slide_audio_config.debug:
             self._slide_presenter.process(screenshot=screenshot_bytes)
         return EnvState(screenshot=screenshot_bytes, url=self._page.url)
 

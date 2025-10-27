@@ -62,7 +62,7 @@ def main() -> int:
     parser.add_argument(
         "--slide-audio-backend",
         type=str,
-        choices=("say",),
+        choices=("say", "native-audio"),
         default="say",
         help="Speech backend to use for slide narration.",
     )
@@ -96,6 +96,24 @@ def main() -> int:
         default=False,
         help="Enable verbose logging for slide narration.",
     )
+    parser.add_argument(
+        "--slide-audio-native-model",
+        type=str,
+        default="gemini-2.5-flash-native-audio-preview-09-2025",
+        help="Model to use for native-audio backend.",
+    )
+    parser.add_argument(
+        "--slide-audio-native-instruction",
+        type=str,
+        default=None,
+        help="Custom system instruction for native-audio model.",
+    )
+    parser.add_argument(
+        "--slide-audio-frame-rate",
+        type=float,
+        default=1.0,
+        help="Frames per second to send to native-audio model.",
+    )
     args = parser.parse_args()
 
     slide_audio_config = None
@@ -107,6 +125,9 @@ def main() -> int:
             rate=args.slide_audio_rate,
             debug=args.slide_audio_debug,
             cooldown_seconds=args.slide_audio_cooldown,
+            native_audio_model=args.slide_audio_native_model,
+            native_audio_system_instruction=args.slide_audio_native_instruction,
+            native_audio_frame_rate=args.slide_audio_frame_rate,
         )
         if args.slide_audio_warmup is not None:
             config_kwargs["warmup_phrase"] = args.slide_audio_warmup

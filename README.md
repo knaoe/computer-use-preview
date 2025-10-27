@@ -133,7 +133,10 @@ The `main.py` script is the command-line interface (CLI) for running the browser
 
 #### Slide Audio Narration
 
-You can have the agent narrate browser-based presentations in real time. Instead of scraping the DOM, every screenshot is routed to a lightweight Gemini `gemini-2.5-flash` prompt that decides whether to speak and, when appropriate, returns the narration script.
+You can have the agent narrate browser-based presentations in real time. Two backends are available:
+
+##### Say Backend (macOS only)
+Every screenshot is routed to a lightweight Gemini `gemini-2.5-flash` prompt that decides whether to speak and, when appropriate, returns the narration script. The script is then spoken using macOS `say` command.
 
 - macOS users can rely on the built-in `say` command; it is automatically detected when you pass `--slide-audio`.
 - Use `--slide-audio-warmup "Testing slide narration"` to trigger a short macOS `say` preview right after the browser session starts.
@@ -147,8 +150,31 @@ python main.py \
   --query "Open my Google Slides deck and move through the slides" \
   --env playwright \
   --slide-audio \
+  --slide-audio-backend say \
   --slide-audio-warmup "Slide narration is ready via macOS say."
 ```
+
+##### Native Audio Backend (Cross-platform)
+Uses Gemini Native Audio Live API for real-time audio generation. Browser screenshots are continuously streamed to the model, which autonomously generates audio narration.
+
+- Requires PyAudio: `brew install portaudio && pip install pyaudio` (macOS)
+- No Flash narration prompt needed - the model speaks directly from video input
+- Supports custom frame rates, models, and system instructions
+- Additional controls include `--slide-audio-native-model`, `--slide-audio-native-instruction`, `--slide-audio-frame-rate`
+
+Example command with Native Audio backend:
+
+```bash
+python main.py \
+  --query "Present the slides at example.com/presentation" \
+  --env playwright \
+  --slide-audio \
+  --slide-audio-backend native-audio \
+  --slide-audio-frame-rate 1.0 \
+  --slide-audio-debug
+```
+
+See [AGENTS.md](AGENTS.md) for detailed architecture and troubleshooting.
 
 ### Environment Variables
 

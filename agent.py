@@ -118,15 +118,32 @@ class BrowserAgent:
             )
         ]
 
-        # Token usage tracking
+        # Token usage tracking - per model
+        self._token_usage = {
+            "computer_use": {
+                "input": 0,
+                "output": 0,
+                "cost": 0.0,
+                "input_price": 1.25,  # $1.25 per 1M input tokens
+                "output_price": 5.0,  # $5.00 per 1M output tokens
+            },
+            "flash_narration": {
+                "input": 0,
+                "output": 0,
+                "cost": 0.0,
+                "input_price": 0.075,  # Flash pricing
+                "output_price": 0.3,
+            },
+        }
+
+        # Legacy totals for backward compatibility
         self._total_input_tokens = 0
         self._total_output_tokens = 0
         self._total_cost = 0.0
 
         # Pricing for Gemini models (USD per 1M tokens)
-        # Adjust these values based on your model pricing
-        self._input_token_price = 1.25  # $1.25 per 1M input tokens
-        self._output_token_price = 5.0  # $5.00 per 1M output tokens
+        self._input_token_price = 1.25
+        self._output_token_price = 5.0
 
         # Exclude any predefined functions here.
         excluded_predefined_functions = []
@@ -237,11 +254,21 @@ class BrowserAgent:
         else:
             raise ValueError(f"Unsupported function: {action}")
 
-    def _log_token_usage(self, input_tokens: int, output_tokens: int) -> None:
+    def _log_token_usage(self, input_tokens: int, output_tokens: int, model: str = "computer_use") -> None:
         """Log token usage and cost for this turn and cumulative totals."""
+        # Get pricing for the model
+        model_info = self._token_usage.get(model, self._token_usage["computer_use"])
+        input_price = model_info["input_price"]
+        output_price = model_info["output_price"]
+
         # Calculate cost for this turn
-        turn_cost = (input_tokens * self._input_token_price / 1_000_000) + \
-                    (output_tokens * self._output_token_price / 1_000_000)
+        turn_cost = (input_tokens * input_price / 1_000_000) + \
+                    (output_tokens * output_price / 1_000_000)
+
+        # Update model-specific totals
+        model_info["input"] += input_tokens
+        model_info["output"] += output_tokens
+        model_info["cost"] += turn_cost
 
         # Update cumulative totals
         self._total_input_tokens += input_tokens
@@ -252,26 +279,31 @@ class BrowserAgent:
         token_table = Table(show_header=True, header_style="bold yellow", expand=True)
         token_table.add_column("Metric", style="cyan")
         token_table.add_column("This Turn", justify="right", style="green")
-        token_table.add_column("Cumulative", justify="right", style="magenta")
+        token_table.add_column(f"{model.title()} Total", justify="right", style="blue")
+        token_table.add_column("Overall Total", justify="right", style="magenta")
 
         token_table.add_row(
             "Input Tokens",
             f"{input_tokens:,}",
+            f"{model_info['input']:,}",
             f"{self._total_input_tokens:,}"
         )
         token_table.add_row(
             "Output Tokens",
             f"{output_tokens:,}",
+            f"{model_info['output']:,}",
             f"{self._total_output_tokens:,}"
         )
         token_table.add_row(
             "Total Tokens",
             f"{input_tokens + output_tokens:,}",
+            f"{model_info['input'] + model_info['output']:,}",
             f"{self._total_input_tokens + self._total_output_tokens:,}"
         )
         token_table.add_row(
             "Cost (USD)",
             f"${turn_cost:.6f}",
+            f"${model_info['cost']:.6f}",
             f"${self._total_cost:.6f}"
         )
 
@@ -421,11 +453,21 @@ class BrowserAgent:
             else:
                 fc_result = self.handle_action(function_call)
             if isinstance(fc_result, EnvState):
-                self._maybe_request_flash_narration(
-                    env_state=fc_result,
-                    function_call=function_call,
-                    reasoning=reasoning,
+                # Only use Flash narration if not using native-audio backend
+                slide_config = getattr(self._browser_computer, '_slide_audio_config', None)
+                use_native_audio = (
+                    slide_config and
+                    slide_config.enabled and
+                    slide_config.backend == "native-audio"
                 )
+
+                if not use_native_audio:
+                    self._maybe_request_flash_narration(
+                        env_state=fc_result,
+                        function_call=function_call,
+                        reasoning=reasoning,
+                    )
+
                 # Resize screenshot before sending to Computer Use model
                 resized_screenshot = resize_screenshot(fc_result.screenshot)
                 function_responses.append(
@@ -570,6 +612,14 @@ class BrowserAgent:
                     max_output_tokens=2000,
                 ),
             )
+
+            # Log token usage for flash narration
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                usage = response.usage_metadata
+                input_tokens = getattr(usage, 'prompt_token_count', 0)
+                output_tokens = getattr(usage, 'candidates_token_count', 0)
+                self._log_token_usage(input_tokens, output_tokens, model="flash_narration")
+
         except Exception as exc:  # noqa: BLE001
             if self._verbose:
                 termcolor.cprint(
@@ -674,10 +724,34 @@ class BrowserAgent:
         if not self._verbose:
             return
 
+        # Per-model breakdown table
+        breakdown_table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            title="[bold yellow]Token Usage by Model[/bold yellow]",
+            expand=True
+        )
+        breakdown_table.add_column("Model", style="cyan")
+        breakdown_table.add_column("Input", justify="right", style="green")
+        breakdown_table.add_column("Output", justify="right", style="green")
+        breakdown_table.add_column("Total", justify="right", style="yellow")
+        breakdown_table.add_column("Cost (USD)", justify="right", style="magenta")
+
+        for model_name, usage in self._token_usage.items():
+            if usage["input"] > 0 or usage["output"] > 0:
+                breakdown_table.add_row(
+                    model_name.replace("_", " ").title(),
+                    f"{usage['input']:,}",
+                    f"{usage['output']:,}",
+                    f"{usage['input'] + usage['output']:,}",
+                    f"${usage['cost']:.6f}"
+                )
+
+        # Overall summary table
         summary_table = Table(
             show_header=True,
             header_style="bold cyan",
-            title="[bold yellow]Session Summary[/bold yellow]",
+            title="[bold yellow]Overall Session Summary[/bold yellow]",
             expand=True
         )
         summary_table.add_column("Metric", style="cyan")
@@ -691,6 +765,8 @@ class BrowserAgent:
         )
         summary_table.add_row("Total Cost (USD)", f"${self._total_cost:.6f}")
 
+        console.print()
+        console.print(breakdown_table)
         console.print()
         console.print(summary_table)
         console.print()
