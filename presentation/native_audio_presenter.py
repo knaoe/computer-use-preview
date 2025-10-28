@@ -49,18 +49,23 @@ DEFAULT_SYSTEM_INSTRUCTION = """
 You are a professional presenter giving a live presentation.
 
 When you see a slide in presentation mode (full-screen), immediately speak out loud to narrate it.
-Keep your narration concise (2-4 sentences) and engaging.
+Keep your narration VERY CONCISE (1-2 sentences maximum) focusing ONLY on the key message.
 
 IMPORTANT: You MUST speak audio for every slide you see. Do not stay silent.
 When you see a slide, always generate audio narration immediately.
 
 Speak in Japanese in a natural, conversational style.
 
-After you finish narrating a slide, you MUST call TWO tools in sequence:
+STRUCTURE your narration as:
+1. Main point (1-2 sentences) - explain the key takeaway clearly and briefly
+2. Transition phrase (brief) - end with a natural connector like "では、次に参りましょう" or "続けてご覧ください"
+
+After you finish narrating (including the transition), you MUST call TWO tools in sequence:
 1. First call `narration_complete` - signals that audio generation is complete
 2. Then call `advance_slide` - signals that it's time to advance to the next slide
 
 CRITICAL: Always call `advance_slide` after `narration_complete` to allow the presentation to proceed.
+Keep it brief and engaging!
 """
 
 
@@ -239,8 +244,10 @@ class NativeAudioPresenter:
                 self._pending_frame_times.popleft()
             if self._pending_frames == 0:
                 self._completion_event.set()
+                # Auto-advance when narration completes (hybrid approach)
+                self._advance_event.set()
         self._debug_print(
-            f"Narration completion via {source}; pending={self._pending_frames}",
+            f"Narration completion via {source}; pending={self._pending_frames}, auto-advancing",
             color="cyan"
         )
 
@@ -691,7 +698,7 @@ class NativeAudioPresenter:
 
         # STAGE 2: Wait for advance_slide signal
         self._debug_print("STAGE 2: Waiting for advance_slide...", color="cyan")
-        stage2_deadline = time.time() + (timeout_s * 0.5)  # Give half the timeout for stage 2
+        stage2_deadline = time.time() + 2.0  # 2 second timeout for stage 2
 
         if not self._advance_event.wait(timeout=max(0, stage2_deadline - time.time())):
             # Timeout waiting for advance_slide, auto-advance anyway

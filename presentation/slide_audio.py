@@ -36,7 +36,7 @@ class SlideAudioConfig:
     rate: Optional[int] = None
     min_chars: int = 1
     max_chars: int = 1200
-    warmup_phrase: Optional[str] = "Slide audio presenter is ready."
+    warmup_phrase: Optional[str] = "それでは、プレゼンテーションを始めます。"
     debug: bool = False
     cooldown_seconds: float = 2.0
     # Native audio specific settings
