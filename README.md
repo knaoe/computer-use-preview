@@ -123,13 +123,13 @@ The `main.py` script is the command-line interface (CLI) for running the browser
 
 ### Command-Line Arguments
 
-| Argument | Description | Required | Default | Supported Environment(s) |
-|-|-|-|-|-|
-| `--query` | The natural language query for the browser agent to execute. | Yes | N/A | All |
-| `--env` | The computer use environment to use. Must be one of the following: `playwright`, or `browserbase` | No | N/A | All |
-| `--initial_url` | The initial URL to load when the browser starts. | No | https://www.google.com | All |
-| `--highlight_mouse` | If specified, the agent will attempt to highlight the mouse cursor's position in the screenshots. This is useful for visual debugging. | No | False (not highlighted) | `playwright` |
-| `--slide-audio` | Enable automatic narration for presentation slides (see below for advanced options). | No | False | All |
+| Argument            | Description                                                                                                                            | Required | Default                 | Supported Environment(s) |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------- | ------------------------ |
+| `--query`           | The natural language query for the browser agent to execute.                                                                           | Yes      | N/A                     | All                      |
+| `--env`             | The computer use environment to use. Must be one of the following: `playwright`, or `browserbase`                                      | No       | N/A                     | All                      |
+| `--initial_url`     | The initial URL to load when the browser starts.                                                                                       | No       | https://www.google.com  | All                      |
+| `--highlight_mouse` | If specified, the agent will attempt to highlight the mouse cursor's position in the screenshots. This is useful for visual debugging. | No       | False (not highlighted) | `playwright`             |
+| `--slide-audio`     | Enable automatic narration for presentation slides (see below for advanced options).                                                   | No       | False                   | All                      |
 
 #### Slide Audio Narration
 
@@ -178,8 +178,8 @@ See [AGENTS.md](AGENTS.md) for detailed architecture and troubleshooting.
 
 ### Environment Variables
 
-| Variable | Description | Required |
-|-|-|-|
-| GEMINI_API_KEY | Your API key for the Gemini model. | Yes |
-| BROWSERBASE_API_KEY | Your API key for Browserbase. | Yes (when using the browserbase environment) |
-| BROWSERBASE_PROJECT_ID | Your Project ID for Browserbase. | Yes (when using the browserbase environment) |
+| Variable               | Description                        | Required                                     |
+| ---------------------- | ---------------------------------- | -------------------------------------------- |
+| GEMINI_API_KEY         | Your API key for the Gemini model. | Yes                                          |
+| BROWSERBASE_API_KEY    | Your API key for Browserbase.      | Yes (when using the browserbase environment) |
+| BROWSERBASE_PROJECT_ID | Your Project ID for Browserbase.   | Yes (when using the browserbase environment) |

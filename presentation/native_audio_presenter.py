@@ -35,6 +35,7 @@ from google.genai import types
 
 if sys.version_info < (3, 11, 0):
     import taskgroup, exceptiongroup
+
     asyncio.TaskGroup = taskgroup.TaskGroup
     asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
 
@@ -60,11 +61,12 @@ STRUCTURE your narration as:
 1. Main point (1-2 sentences) - explain the key takeaway clearly and briefly
 2. Transition phrase (brief) - end with a natural connector like "では、次に参りましょう" or "続けてご覧ください"
 
-After you finish narrating (including the transition), you MUST call TWO tools in sequence:
-1. First call `narration_complete` - signals that audio generation is complete
-2. Then call `advance_slide` - signals that it's time to advance to the next slide
+CONTROL FLOW (do NOT speak these instructions):
+After you finish narrating (including the transition), call these tools in sequence:
+1. First: narration_complete (signals audio is done)
+2. Then: advance_slide (signals ready for next slide)
 
-CRITICAL: Always call `advance_slide` after `narration_complete` to allow the presentation to proceed.
+Always call advance_slide after narration_complete to proceed.
 Keep it brief and engaging!
 """
 
@@ -132,8 +134,14 @@ class NativeAudioPresenter:
         self._advance_event = threading.Event()
         self._advance_event.set()
         self._pending_frame_times: deque[float] = deque()
+        # Token usage estimation (since Live API doesn't provide real-time metrics)
+        self._estimated_input_tokens = 0
+        self._estimated_output_tokens = 0
+        self._frames_sent = 0
 
-    def _debug_print(self, message: str, color: str = "cyan", attrs: Optional[list[str]] = None) -> None:
+    def _debug_print(
+        self, message: str, color: str = "cyan", attrs: Optional[list[str]] = None
+    ) -> None:
         if self._debug:
             termcolor.cprint(f"[Native Audio] {message}", color=color, attrs=attrs)
 
@@ -180,8 +188,50 @@ class NativeAudioPresenter:
         if self._loop_thread:
             self._loop_thread.join(timeout=5)
 
+        # Report token usage estimates on stop
+        self._report_token_usage()
+
         self._status_callback("Native Audio presenter stopped.")
         self._debug_print("Presenter stopped", color="blue")
+
+    def _report_token_usage(self) -> None:
+        """Report final token usage summary (already reported incrementally during session)."""
+        if not self._token_callback:
+            return
+
+        try:
+            # Check if we have real usage statistics
+            real_usage_found = False
+            if self._session and hasattr(self._session, 'usage_metadata'):
+                usage = self._session.usage_metadata
+                if usage:
+                    input_tokens = getattr(usage, 'prompt_token_count', 0) or getattr(usage, 'total_token_count', 0)
+                    output_tokens = getattr(usage, 'candidates_token_count', 0)
+                    if input_tokens > 0 or output_tokens > 0:
+                        # Actual usage differs from estimates - report the difference
+                        input_diff = input_tokens - self._estimated_input_tokens
+                        output_diff = output_tokens - self._estimated_output_tokens
+                        if input_diff != 0 or output_diff != 0:
+                            self._token_callback(input_diff, output_diff)
+                        self._debug_print(
+                            f"Session actual vs estimated: actual=({input_tokens:,}, {output_tokens:,}), estimated=({self._estimated_input_tokens:,}, {self._estimated_output_tokens:,})",
+                            color="green",
+                            attrs=["bold"],
+                        )
+                        termcolor.cprint(
+                            f"Native Audio Session Complete: {input_tokens:,} input + {output_tokens:,} output = {input_tokens + output_tokens:,} tokens (actual)",
+                            color="green",
+                        )
+                        real_usage_found = True
+
+            # Display summary of estimates if no real usage found
+            if not real_usage_found and (self._estimated_input_tokens > 0 or self._estimated_output_tokens > 0):
+                termcolor.cprint(
+                    f"Native Audio Session Complete: {self._estimated_input_tokens:,} input + {self._estimated_output_tokens:,} output = {self._estimated_input_tokens + self._estimated_output_tokens:,} tokens (estimated from {self._frames_sent} frames)",
+                    color="green",
+                )
+        except Exception as exc:
+            self._debug_print(f"Could not report token usage summary: {exc}", color="yellow")
 
     async def _shutdown(self) -> None:
         """Gracefully shutdown the async session."""
@@ -205,14 +255,13 @@ class NativeAudioPresenter:
         # Track pending narration before enqueueing
         self._mark_frame_pending()
         self._debug_print(
-            f"Queueing video frame ({len(frame_data)} bytes)",
-            color="cyan"
+            f"Queueing video frame ({len(frame_data)} bytes)", color="cyan"
         )
 
         # Schedule the coroutine in the background thread's event loop
         future = asyncio.run_coroutine_threadsafe(
             self._video_queue.put({"data": frame_data, "mime_type": mime_type}),
-            self._loop
+            self._loop,
         )
 
         def _handle_put_result(fut: asyncio.Future) -> None:
@@ -232,8 +281,7 @@ class NativeAudioPresenter:
             self._advance_event.clear()
             self._pending_frame_times.append(time.time())
             self._debug_print(
-                f"Frame pending → count={self._pending_frames}",
-                color="blue"
+                f"Frame pending → count={self._pending_frames}", color="blue"
             )
 
     def _mark_narration_complete(self, *, source: str = "tool") -> None:
@@ -248,7 +296,7 @@ class NativeAudioPresenter:
                 self._advance_event.set()
         self._debug_print(
             f"Narration completion via {source}; pending={self._pending_frames}, auto-advancing",
-            color="cyan"
+            color="cyan",
         )
 
     def _run_event_loop(self) -> None:
@@ -271,12 +319,15 @@ class NativeAudioPresenter:
             "speech_config": {
                 "voice_config": {
                     "prebuilt_voice_config": {
-                        "voice_name": "Puck"
+                        # Female voices: Aoede, Kore, Leda, Zephyr
+                        # Male voices: Puck, Charon, Orus
+                        # Neutral: Fenrir
+                        "voice_name": "Fenrir"
                     }
                 }
             },
             # Enable proactive audio generation - CRITICAL for audio output!
-            "proactivity": {'proactive_audio': True},
+            "proactivity": {"proactive_audio": True},
             # Enable generation after each input
             "generation_config": {
                 "temperature": 1.0,
@@ -302,30 +353,26 @@ class NativeAudioPresenter:
                                 properties={},
                                 required=[],
                             ),
-                        )
+                        ),
                     ]
                 )
             ],
         }
 
-        self._debug_print(
-            f"Connecting to model: {self._model}",
-            color="cyan"
-        )
+        self._debug_print(f"Connecting to model: {self._model}", color="cyan")
 
         try:
             async with (
-                self._client.aio.live.connect(model=self._model, config=config) as session,
+                self._client.aio.live.connect(
+                    model=self._model, config=config
+                ) as session,
                 asyncio.TaskGroup() as tg,
             ):
                 self._session = session
                 self._video_queue = asyncio.Queue(maxsize=5)
                 self._audio_queue = asyncio.Queue()
 
-                self._debug_print(
-                    "Session connected, starting tasks...",
-                    color="green"
-                )
+                self._debug_print("Session connected, starting tasks...", color="green")
 
                 tg.create_task(self._send_video_loop())
                 tg.create_task(self._send_silence_loop())  # Keep connection alive
@@ -347,22 +394,18 @@ class NativeAudioPresenter:
 
                 if self._session:
                     # Send 100ms of silence (16000 Hz * 0.1s * 2 bytes)
-                    silence = b'\x00' * (send_rate // 10 * 2)
+                    silence = b"\x00" * (send_rate // 10 * 2)
 
                     await self._session.send_realtime_input(
                         audio={"data": silence, "mime_type": "audio/pcm"}
                     )
 
                     self._debug_print(
-                        "Sent silence to keep connection alive",
-                        color="blue"
+                        "Sent silence to keep connection alive", color="blue"
                     )
 
             except Exception as e:
-                self._debug_print(
-                    f"Error sending silence: {e}",
-                    color="yellow"
-                )
+                self._debug_print(f"Error sending silence: {e}", color="yellow")
                 await asyncio.sleep(1.0)
 
     async def _send_video_loop(self) -> None:
@@ -371,13 +414,23 @@ class NativeAudioPresenter:
         while self._active:
             try:
                 # Wait for video frame with timeout
-                frame = await asyncio.wait_for(
-                    self._video_queue.get(),
-                    timeout=1.0
-                )
+                frame = await asyncio.wait_for(self._video_queue.get(), timeout=1.0)
 
                 if self._session:
                     frame_count += 1
+                    self._frames_sent += 1
+
+                    # Estimate input tokens: ~258 tokens per image (typical for 800x600 PNG)
+                    # + ~10 tokens for the text prompt
+                    estimated_tokens = 258 + 10
+                    self._estimated_input_tokens += estimated_tokens
+
+                    # Report input tokens immediately to update overall totals
+                    if self._token_callback:
+                        try:
+                            self._token_callback(estimated_tokens, 0)
+                        except Exception:
+                            pass
 
                     try:
                         # Try using send_client_content with image as content
@@ -385,47 +438,42 @@ class NativeAudioPresenter:
                             role="user",
                             parts=[
                                 types.Part.from_bytes(
-                                    data=frame["data"],
-                                    mime_type=frame["mime_type"]
+                                    data=frame["data"], mime_type=frame["mime_type"]
                                 ),
-                                types.Part(text="Please narrate this slide in Japanese.")
-                            ]
+                                types.Part(
+                                    text="Please narrate this slide in Japanese."
+                                ),
+                            ],
                         )
 
                         await self._session.send_client_content(
-                            turns=content,
-                            turn_complete=True
+                            turns=content, turn_complete=True
                         )
 
                         self._debug_print(
-                            f"Sent video frame #{frame_count} via send_client_content ({len(frame['data'])} bytes)",
-                            color="cyan"
+                            f"Sent video frame #{frame_count} via send_client_content ({len(frame['data'])} bytes, ~{estimated_tokens} tokens)",
+                            color="cyan",
                         )
 
                     except Exception as e:
                         # Fallback to send_realtime_input
                         self._debug_print(
                             f"send_client_content failed, trying send_realtime_input: {e}",
-                            color="yellow"
+                            color="yellow",
                         )
 
-                        await self._session.send_realtime_input(
-                            media=frame
-                        )
+                        await self._session.send_realtime_input(media=frame)
 
                         self._debug_print(
-                            f"Sent video frame #{frame_count} via send_realtime_input ({len(frame['data'])} bytes)",
-                            color="cyan"
+                            f"Sent video frame #{frame_count} via send_realtime_input ({len(frame['data'])} bytes, ~{estimated_tokens} tokens)",
+                            color="cyan",
                         )
 
             except asyncio.TimeoutError:
                 # No frame available, continue
                 continue
             except Exception as e:
-                self._debug_print(
-                    f"Error sending video: {e}",
-                    color="yellow"
-                )
+                self._debug_print(f"Error sending video: {e}", color="yellow")
                 self._mark_narration_complete(source="send-error")
 
     async def _receive_audio_loop(self) -> None:
@@ -446,20 +494,18 @@ class NativeAudioPresenter:
                 if self._debug and (current_time - last_log_time) > 5.0:
                     self._debug_print(
                         f"Still waiting... (turn #{turn_count}, session active: {self._session is not None})",
-                        color="yellow"
+                        color="yellow",
                     )
                     last_log_time = current_time
 
                 self._debug_print(
-                    f"Calling session.receive() for turn #{turn_count}...",
-                    color="cyan"
+                    f"Calling session.receive() for turn #{turn_count}...", color="cyan"
                 )
 
                 turn = self._session.receive()
 
                 self._debug_print(
-                    "Got turn object, iterating responses...",
-                    color="cyan"
+                    "Got turn object, iterating responses...", color="cyan"
                 )
 
                 response_count = 0
@@ -475,24 +521,41 @@ class NativeAudioPresenter:
                         if log_details:
                             self._debug_print(
                                 f"Turn #{turn_count}, Response #{response_count}: {type(response).__name__}",
-                                color="green"
+                                color="green",
                             )
-                            if hasattr(response, '__dict__'):
-                                attrs = {k: type(v).__name__ for k, v in response.__dict__.items()}
+                            if hasattr(response, "__dict__"):
+                                attrs = {
+                                    k: type(v).__name__
+                                    for k, v in response.__dict__.items()
+                                }
                                 self._debug_print(
-                                    f"Response attributes: {attrs}",
-                                    color="cyan"
+                                    f"Response attributes: {attrs}", color="cyan"
                                 )
 
                     if data := response.data:
                         chunk_count += 1
                         await self._audio_queue.put(data)
 
+                        # Estimate output tokens from audio data
+                        # Audio is 16-bit PCM at 24kHz, so 2 bytes per sample
+                        # Rough estimate: 1 second of audio ≈ 50 tokens (2-4 words in Japanese)
+                        audio_seconds = len(data) / (RECEIVE_SAMPLE_RATE * 2)
+                        estimated_output = int(audio_seconds * 50)
+                        if estimated_output > 0:
+                            self._estimated_output_tokens += estimated_output
+
+                            # Report output tokens immediately to update overall totals
+                            if self._token_callback:
+                                try:
+                                    self._token_callback(0, estimated_output)
+                                except Exception:
+                                    pass
+
                         if self._debug and (chunk_count == 1 or chunk_count % 20 == 0):
                             self._debug_print(
-                                f"Audio chunk #{chunk_count} ({len(data)} bytes)",
+                                f"Audio chunk #{chunk_count} ({len(data)} bytes, ~{audio_seconds:.1f}s, ~{estimated_output} tokens)",
                                 color="green",
-                                attrs=["bold"]
+                                attrs=["bold"],
                             )
                         # Record last time we received audio
                         self._last_audio_ts = time.time()
@@ -511,14 +574,41 @@ class NativeAudioPresenter:
                                 self._debug_print(
                                     f"Model Text: {' '.join(text_parts)}",
                                     color="magenta",
-                                    attrs=["bold"]
+                                    attrs=["bold"],
                                 )
+
+                    # Track token usage if available
+                    if self._token_callback:
+                        if hasattr(response, "usage_metadata") and response.usage_metadata:
+                            usage = response.usage_metadata
+                            input_tokens = getattr(usage, "prompt_token_count", 0) or getattr(usage, "total_token_count", 0)
+                            output_tokens = getattr(usage, "candidates_token_count", 0)
+                            if input_tokens > 0 or output_tokens > 0:
+                                try:
+                                    self._token_callback(input_tokens, output_tokens)
+                                    if self._debug:
+                                        self._debug_print(
+                                            f"Token usage tracked: input={input_tokens}, output={output_tokens}",
+                                            color="yellow",
+                                        )
+                                except Exception as exc:
+                                    if self._debug:
+                                        self._debug_print(
+                                            f"Token callback failed: {exc}",
+                                            color="red",
+                                        )
+                        elif self._debug and response_count == 1:
+                            # Only log once per turn to avoid spam
+                            self._debug_print(
+                                "No usage_metadata in response (Live API may not provide per-turn metrics)",
+                                color="yellow",
+                            )
 
                     if response.tool_call and response.tool_call.function_calls:
                         for function_call in response.tool_call.function_calls:
                             self._debug_print(
                                 f"Tool call received: {function_call.name}",
-                                color="blue"
+                                color="blue",
                             )
                             if function_call.name == "narration_complete":
                                 self._mark_narration_complete(source="tool-call")
@@ -533,14 +623,14 @@ class NativeAudioPresenter:
                                 except Exception as exc:  # noqa: BLE001
                                     self._debug_print(
                                         f"Failed to send tool response: {exc}",
-                                        color="red"
+                                        color="red",
                                     )
                             elif function_call.name == "advance_slide":
                                 self._advance_event.set()
                                 self._debug_print(
                                     "advance_slide received → signaling ready to advance",
                                     color="green",
-                                    attrs=["bold"]
+                                    attrs=["bold"],
                                 )
                                 try:
                                     await self._session.send_tool_response(
@@ -553,12 +643,12 @@ class NativeAudioPresenter:
                                 except Exception as exc:  # noqa: BLE001
                                     self._debug_print(
                                         f"Failed to send tool response: {exc}",
-                                        color="red"
+                                        color="red",
                                     )
 
                 self._debug_print(
                     f"Turn #{turn_count} complete ({response_count} responses, {chunk_count} chunks)",
-                    color="yellow"
+                    color="yellow",
                 )
 
                 # Clear audio queue on interruption
@@ -573,11 +663,10 @@ class NativeAudioPresenter:
             except Exception as e:
                 if self._active:
                     self._debug_print(
-                        f"ERROR in receive loop: {e}",
-                        color="red",
-                        attrs=["bold"]
+                        f"ERROR in receive loop: {e}", color="red", attrs=["bold"]
                     )
                     import traceback
+
                     traceback.print_exc()
                 if self._active:
                     await asyncio.sleep(1.0)
@@ -600,8 +689,7 @@ class NativeAudioPresenter:
                 try:
                     # Wait for audio with timeout
                     bytestream = await asyncio.wait_for(
-                        self._audio_queue.get(),
-                        timeout=1.0
+                        self._audio_queue.get(), timeout=1.0
                     )
                     await asyncio.to_thread(stream.write, bytestream)
 
@@ -636,10 +724,12 @@ class NativeAudioPresenter:
         start_wait = time.time()
         with self._pending_lock:
             pending_snapshot = self._pending_frames
-            first_frame_time = self._pending_frame_times[0] if self._pending_frame_times else None
+            first_frame_time = (
+                self._pending_frame_times[0] if self._pending_frame_times else None
+            )
         self._debug_print(
             f"wait_for_quiet start: pending={pending_snapshot}, last_audio={self._last_audio_ts:.3f}, timeout={timeout_s}, quiet={quiet_s}, no_audio={no_audio_timeout}",
-            color="blue"
+            color="blue",
         )
         deadline = time.time() + timeout_s
 
@@ -651,10 +741,13 @@ class NativeAudioPresenter:
             now = time.time()
             if first_frame_time and no_audio_timeout > 0:
                 last_audio_ts = self._last_audio_ts
-                if last_audio_ts <= first_frame_time and (now - first_frame_time) >= no_audio_timeout:
+                if (
+                    last_audio_ts <= first_frame_time
+                    and (now - first_frame_time) >= no_audio_timeout
+                ):
                     self._debug_print(
                         f"No audio within {no_audio_timeout:.2f}s of frame; marking completion",
-                        color="yellow"
+                        color="yellow",
                     )
                     self._mark_narration_complete(source="no-audio")
                     # Also auto-advance if no audio detected
@@ -663,7 +756,11 @@ class NativeAudioPresenter:
                         event_fired = True
                         break
                     with self._pending_lock:
-                        first_frame_time = self._pending_frame_times[0] if self._pending_frame_times else None
+                        first_frame_time = (
+                            self._pending_frame_times[0]
+                            if self._pending_frame_times
+                            else None
+                        )
                     continue
 
             remaining = max(0.0, deadline - time.time())
@@ -672,7 +769,9 @@ class NativeAudioPresenter:
                 break
 
             with self._pending_lock:
-                first_frame_time = self._pending_frame_times[0] if self._pending_frame_times else None
+                first_frame_time = (
+                    self._pending_frame_times[0] if self._pending_frame_times else None
+                )
 
         if not event_fired:
             # Timed out waiting entirely; release any pending waiters so the loop can proceed
@@ -680,14 +779,14 @@ class NativeAudioPresenter:
             self._advance_event.set()  # Auto-advance on timeout
             self._debug_print(
                 f"wait_for_quiet STAGE 1 timeout after {time.time() - start_wait:.2f}s",
-                color="red"
+                color="red",
             )
             return
 
         # narration_complete received. Wait briefly for residual audio to clear.
         self._debug_print(
             f"STAGE 1 complete: narration_complete received after {time.time() - start_wait:.2f}s",
-            color="green"
+            color="green",
         )
         end_deadline = time.time() + quiet_s
         while time.time() < end_deadline:
@@ -704,12 +803,12 @@ class NativeAudioPresenter:
             # Timeout waiting for advance_slide, auto-advance anyway
             self._debug_print(
                 f"STAGE 2 timeout waiting for advance_slide after {time.time() - start_wait:.2f}s; auto-advancing",
-                color="yellow"
+                color="yellow",
             )
             self._advance_event.set()
 
         self._debug_print(
             f"wait_for_quiet complete in {time.time() - start_wait:.2f}s; pending={self._pending_frames}",
             color="blue",
-            attrs=["bold"]
+            attrs=["bold"],
         )

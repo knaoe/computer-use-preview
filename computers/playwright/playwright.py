@@ -83,6 +83,7 @@ class PlaywrightComputer(Computer):
         search_engine_url: str = "https://www.google.com",
         highlight_mouse: bool = False,
         slide_audio_config: Optional[SlideAudioConfig] = None,
+        token_callback: Optional[callable] = None,
     ):
         self._initial_url = initial_url
         self._screen_size = screen_size
@@ -91,6 +92,7 @@ class PlaywrightComputer(Computer):
         self._slide_audio_config = slide_audio_config
         self._slide_presenter: Optional[SlideAudioPresenter] = None
         self._last_frame_time = 0.0
+        self._token_callback = token_callback
 
     def _handle_new_page(self, new_page: playwright.sync_api.Page):
         """The Computer Use model only supports a single tab at the moment.
@@ -165,6 +167,7 @@ class PlaywrightComputer(Computer):
                 page=self._page,
                 config=self._slide_audio_config,
                 status_callback=lambda message: termcolor.cprint(message, color="green", attrs=["bold"]),
+                token_callback=self._token_callback,
             )
             self._slide_presenter.start()
         except SlideAudioError as exc:

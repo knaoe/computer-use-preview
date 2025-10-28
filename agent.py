@@ -110,6 +110,13 @@ class BrowserAgent:
             location=os.environ.get("VERTEXAI_LOCATION"),
         )
 
+        # Set up token callback for native audio if needed
+        if hasattr(browser_computer, '_token_callback') and browser_computer._token_callback is None:
+            def native_audio_token_callback(input_tokens: int, output_tokens: int) -> None:
+                # Use silent=True to accumulate without displaying intermediate tables
+                self._log_token_usage(input_tokens, output_tokens, model="native_audio", silent=True)
+            browser_computer._token_callback = native_audio_token_callback
+
         # Check if using native audio for presentations
         slide_config = getattr(browser_computer, '_slide_audio_config', None)
         use_native_audio = (
@@ -161,6 +168,13 @@ User's actual request:
                 "output": 0,
                 "cost": 0.0,
                 "input_price": 0.075,  # Flash pricing
+                "output_price": 0.3,
+            },
+            "native_audio": {
+                "input": 0,
+                "output": 0,
+                "cost": 0.0,
+                "input_price": 0.075,  # Flash pricing (native audio uses flash model)
                 "output_price": 0.3,
             },
         }
@@ -283,8 +297,15 @@ User's actual request:
         else:
             raise ValueError(f"Unsupported function: {action}")
 
-    def _log_token_usage(self, input_tokens: int, output_tokens: int, model: str = "computer_use") -> None:
-        """Log token usage and cost for this turn and cumulative totals."""
+    def _log_token_usage(self, input_tokens: int, output_tokens: int, model: str = "computer_use", silent: bool = False) -> None:
+        """Log token usage and cost for this turn and cumulative totals.
+
+        Args:
+            input_tokens: Number of input tokens used
+            output_tokens: Number of output tokens used
+            model: Model name (computer_use, flash_narration, native_audio)
+            silent: If True, update totals without displaying table (for background updates)
+        """
         # Get pricing for the model
         model_info = self._token_usage.get(model, self._token_usage["computer_use"])
         input_price = model_info["input_price"]
@@ -303,6 +324,10 @@ User's actual request:
         self._total_input_tokens += input_tokens
         self._total_output_tokens += output_tokens
         self._total_cost += turn_cost
+
+        # Only display table if not silent
+        if silent:
+            return
 
         # Create a table for token usage display
         token_table = Table(show_header=True, header_style="bold yellow", expand=True)

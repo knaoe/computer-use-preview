@@ -24,11 +24,13 @@ class BrowserbaseComputer(PlaywrightComputer):
         screen_size: tuple[int, int],
         initial_url: str = "https://www.google.com",
         slide_audio_config=None,
+        token_callback=None,
     ):
         super().__init__(
             screen_size,
             initial_url,
             slide_audio_config=slide_audio_config,
+            token_callback=token_callback,
         )
 
     def __enter__(self):

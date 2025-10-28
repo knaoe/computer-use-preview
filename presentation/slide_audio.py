@@ -43,7 +43,7 @@ class SlideAudioConfig:
     native_audio_model: str = "gemini-2.5-flash-native-audio-preview-09-2025"
     native_audio_system_instruction: Optional[str] = None
     native_audio_frame_rate: float = 1.0  # frames per second to send
-    native_audio_wait_timeout: float = 20.0  # seconds to wait for narration completion
+    native_audio_wait_timeout: float = 30.0  # seconds to wait for narration completion
     native_audio_quiet_window: float = 0.8  # seconds of silence to treat as done
     native_audio_no_response_timeout: float = 6.0  # seconds before assuming no narration will start
 
@@ -160,16 +160,16 @@ class _GeminiNativeAudioSynthesizer:
 現在、スライドショーのプレゼンテーションを行っています。
 
 スライドが表示されたら、以下のように発表してください：
-1. スライドの内容を簡潔に説明する
+1. スライドの内容を読み上げるだけでなく共感してもらえるような言葉選びで説明する
 2. 自然な日本語で、聴衆に語りかけるように話す
 3. 重要なポイントを強調する
-4. 各スライドは2-4文程度で説明する
+4. 各スライドは2文程度で短く説明する
 
 重要: 以下の場合は発表しないでください:
 - スライド編集画面やサムネイル表示
 - ブラウザのナビゲーションページ (Google検索など)
 - ローディング画面
-- プレゼンテーションモードに入る前のGoogle Slidesインターフェース
+- プレゼンテーションモードに入る前のGoogle Slides等のインターフェース
 
 プレゼンテーションモード (フルスクリーンのスライド表示) のときのみ発表してください。
 """
@@ -230,10 +230,10 @@ class _GeminiNativeAudioSynthesizer:
 
     def _ensure_completion_instruction(self, text: str) -> str:
         reminder = (
-            "\n\nAfter you finish narrating a slide, call the tool `narration_complete` "
-            "with no parameters so the controller knows narration is done."
+            "\n\nCONTROL FLOW (do NOT speak): "
+            "After narrating, call narration_complete then advance_slide tools."
         )
-        if "narration_complete" in text:
+        if "narration_complete" in text or "CONTROL FLOW" in text:
             return text
         return text.strip() + reminder
 
