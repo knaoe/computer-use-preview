@@ -382,6 +382,51 @@ class PlaywrightComputer(Computer):
             url=url,
         )
 
+    def wait_for_narration_quiet(
+        self,
+        *,
+        timeout_s: Optional[float] = None,
+        quiet_s: Optional[float] = None,
+        no_audio_timeout: Optional[float] = None,
+    ) -> None:
+        """In native-audio mode, wait until audio playback is quiet.
+
+        Acts as a no-op when slide audio is disabled or using the 'say' backend.
+        """
+        try:
+            if not self._slide_audio_config or not self._slide_audio_config.enabled:
+                return
+            if self._slide_audio_config.backend != "native-audio":
+                return
+            if not self._slide_presenter:
+                return
+            synthesizer = getattr(self._slide_presenter, "_synthesizer", None)
+            if not synthesizer or not hasattr(synthesizer, "wait_for_quiet"):
+                return
+            wait_timeout = (
+                timeout_s
+                if timeout_s is not None
+                else self._slide_audio_config.native_audio_wait_timeout
+            )
+            quiet_window = (
+                quiet_s
+                if quiet_s is not None
+                else self._slide_audio_config.native_audio_quiet_window
+            )
+            no_audio_window = (
+                no_audio_timeout
+                if no_audio_timeout is not None
+                else self._slide_audio_config.native_audio_no_response_timeout
+            )
+            synthesizer.wait_for_quiet(
+                timeout_s=wait_timeout,
+                quiet_s=quiet_window,
+                no_audio_timeout=no_audio_window,
+            )
+        except Exception:
+            # Never block the control loop on sync issues
+            return
+
     def screen_size(self) -> tuple[int, int]:
         viewport_size = self._page.viewport_size
         # If available, try to take the local playwright viewport size.

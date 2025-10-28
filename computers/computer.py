@@ -13,7 +13,7 @@
 # limitations under the License.
 import abc
 import pydantic
-from typing import Literal
+from typing import Literal, Optional
 
 
 class EnvState(pydantic.BaseModel):
@@ -127,3 +127,18 @@ class Computer(abc.ABC):
     @abc.abstractmethod
     def narrate_text(self, text: str, source: str = "external") -> None:
         """Optionally narrates external text, such as model reasoning."""
+
+    @abc.abstractmethod
+    def wait_for_narration_quiet(
+        self,
+        *,
+        timeout_s: Optional[float] = None,
+        quiet_s: Optional[float] = None,
+        no_audio_timeout: Optional[float] = None,
+    ) -> None:
+        """Blocks until slide narration appears quiet.
+
+        Implementations may no-op when narration is disabled. In native-audio
+        mode, this should wait until no audio has been received for at least
+        `quiet_s` seconds, or until `timeout_s` elapses.
+        """

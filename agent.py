@@ -109,11 +109,40 @@ class BrowserAgent:
             project=os.environ.get("VERTEXAI_PROJECT"),
             location=os.environ.get("VERTEXAI_LOCATION"),
         )
+
+        # Check if using native audio for presentations
+        slide_config = getattr(browser_computer, '_slide_audio_config', None)
+        use_native_audio = (
+            slide_config and
+            slide_config.enabled and
+            slide_config.backend == "native-audio"
+        )
+
+        # Prepare the initial query with presentation-specific instructions
+        if use_native_audio:
+            presentation_instructions = """IMPORTANT INSTRUCTIONS FOR PRESENTATION MODE:
+
+- Audio narration is handled AUTOMATICALLY by a separate AI presenter
+- You do NOT need to narrate or explain slides verbally
+- Do NOT provide text descriptions of what you see on slides
+- Your role is ONLY to navigate through the presentation when appropriate
+- After each slide transition, the audio presenter will automatically narrate
+- Wait for the narration to complete before advancing to the next slide
+
+Focus on navigation tasks only (opening presentation, entering fullscreen, etc.).
+Let the audio presenter handle all narration.
+
+User's actual request:
+"""
+            full_query = presentation_instructions + self._query
+        else:
+            full_query = self._query
+
         self._contents: list[Content] = [
             Content(
                 role="user",
                 parts=[
-                    Part(text=self._query),
+                    Part(text=full_query),
                 ],
             )
         ]
@@ -467,6 +496,12 @@ class BrowserAgent:
                         function_call=function_call,
                         reasoning=reasoning,
                     )
+                else:
+                    # In native-audio mode, wait for the presenter to finish narration
+                    try:
+                        self._browser_computer.wait_for_narration_quiet()
+                    except Exception:
+                        pass
 
                 # Resize screenshot before sending to Computer Use model
                 resized_screenshot = resize_screenshot(fc_result.screenshot)

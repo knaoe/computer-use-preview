@@ -43,6 +43,9 @@ class SlideAudioConfig:
     native_audio_model: str = "gemini-2.5-flash-native-audio-preview-09-2025"
     native_audio_system_instruction: Optional[str] = None
     native_audio_frame_rate: float = 1.0  # frames per second to send
+    native_audio_wait_timeout: float = 20.0  # seconds to wait for narration completion
+    native_audio_quiet_window: float = 0.8  # seconds of silence to treat as done
+    native_audio_no_response_timeout: float = 6.0  # seconds before assuming no narration will start
 
     def validate(self) -> None:
         if self.min_chars <= 0:
@@ -55,6 +58,12 @@ class SlideAudioConfig:
             raise ValueError("backend must be provided")
         if self.native_audio_frame_rate <= 0:
             raise ValueError("native_audio_frame_rate must be positive")
+        if self.native_audio_wait_timeout <= 0:
+            raise ValueError("native_audio_wait_timeout must be positive")
+        if self.native_audio_quiet_window <= 0:
+            raise ValueError("native_audio_quiet_window must be positive")
+        if self.native_audio_no_response_timeout <= 0:
+            raise ValueError("native_audio_no_response_timeout must be positive")
 
 
 class _OSSaySpeechSynthesizer:
@@ -131,10 +140,12 @@ class _GeminiNativeAudioSynthesizer:
         location = os.environ.get("VERTEXAI_LOCATION")
 
         # Initialize presenter
+        instruction = config.native_audio_system_instruction or self._get_default_instruction()
+        instruction = self._ensure_completion_instruction(instruction)
         self._presenter = NativeAudioPresenter(
             api_key=api_key,
             model=config.native_audio_model,
-            system_instruction=config.native_audio_system_instruction or self._get_default_instruction(),
+            system_instruction=instruction,
             debug=config.debug,
             use_vertexai=use_vertexai,
             project=project,
@@ -183,6 +194,48 @@ class _GeminiNativeAudioSynthesizer:
     def stop(self) -> None:
         """Stop the native audio presenter."""
         self._presenter.stop()
+
+    # Coordination helper for BrowserAgent/Computer
+    def wait_for_quiet(
+        self,
+        *,
+        timeout_s: Optional[float] = None,
+        quiet_s: Optional[float] = None,
+        no_audio_timeout: Optional[float] = None,
+    ) -> None:
+        if not hasattr(self._presenter, "wait_for_quiet"):
+            return
+
+        effective_timeout = (
+            timeout_s
+            if timeout_s is not None
+            else self._config.native_audio_wait_timeout
+        )
+        effective_quiet = (
+            quiet_s
+            if quiet_s is not None
+            else self._config.native_audio_quiet_window
+        )
+        effective_no_audio = (
+            no_audio_timeout
+            if no_audio_timeout is not None
+            else self._config.native_audio_no_response_timeout
+        )
+
+        self._presenter.wait_for_quiet(
+            timeout_s=effective_timeout,
+            quiet_s=effective_quiet,
+            no_audio_timeout=effective_no_audio,
+        )
+
+    def _ensure_completion_instruction(self, text: str) -> str:
+        reminder = (
+            "\n\nAfter you finish narrating a slide, call the tool `narration_complete` "
+            "with no parameters so the controller knows narration is done."
+        )
+        if "narration_complete" in text:
+            return text
+        return text.strip() + reminder
 
 
 def _create_synthesizer(config: SlideAudioConfig, token_callback: Optional[Callable[[int, int], None]] = None) -> SpeechSynthesizer:
