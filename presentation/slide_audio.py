@@ -17,7 +17,9 @@ class SlideAudioError(RuntimeError):
 class SpeechSynthesizer(Protocol):
     """Protocol for speech synthesis implementations."""
 
-    def speak(self, text: str, *, interrupt: bool = True, wait: bool = False) -> None: ...
+    def speak(
+        self, text: str, *, interrupt: bool = True, wait: bool = False
+    ) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -45,7 +47,9 @@ class SlideAudioConfig:
     native_audio_frame_rate: float = 1.0  # frames per second to send
     native_audio_wait_timeout: float = 30.0  # seconds to wait for narration completion
     native_audio_quiet_window: float = 0.8  # seconds of silence to treat as done
-    native_audio_no_response_timeout: float = 6.0  # seconds before assuming no narration will start
+    native_audio_no_response_timeout: float = (
+        6.0  # seconds before assuming no narration will start
+    )
 
     def validate(self) -> None:
         if self.min_chars <= 0:
@@ -121,7 +125,11 @@ class _OSSaySpeechSynthesizer:
 class _GeminiNativeAudioSynthesizer:
     """Speech synthesis using Gemini Native Audio Live API."""
 
-    def __init__(self, config: SlideAudioConfig, token_callback: Optional[Callable[[int, int], None]] = None) -> None:
+    def __init__(
+        self,
+        config: SlideAudioConfig,
+        token_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> None:
         try:
             from presentation.native_audio_presenter import NativeAudioPresenter
         except ImportError as e:
@@ -140,7 +148,9 @@ class _GeminiNativeAudioSynthesizer:
         location = os.environ.get("VERTEXAI_LOCATION")
 
         # Initialize presenter
-        instruction = config.native_audio_system_instruction or self._get_default_instruction()
+        instruction = (
+            config.native_audio_system_instruction or self._get_default_instruction()
+        )
         instruction = self._ensure_completion_instruction(instruction)
         self._presenter = NativeAudioPresenter(
             api_key=api_key,
@@ -160,10 +170,11 @@ class _GeminiNativeAudioSynthesizer:
 現在、スライドショーのプレゼンテーションを行っています。
 
 スライドが表示されたら、以下のように発表してください：
-1. スライドの内容を読み上げるだけでなく共感してもらえるような言葉選びで説明する
+1. スライドの内容を読み上げるだけは避けよう。内容から考えて共感してもらえるような言葉選びで説明しよう。
 2. 自然な日本語で、聴衆に語りかけるように話す
 3. 重要なポイントを強調する
-4. 各スライドは2文程度で短く説明する
+4. 各スライドは2-3文程度で短く説明する
+5. 最後のスライドになったら挨拶して終わり
 
 重要: 以下の場合は発表しないでください:
 - スライド編集画面やサムネイル表示
@@ -179,15 +190,14 @@ class _GeminiNativeAudioSynthesizer:
         if self._debug:
             termcolor.cprint(
                 f"[Native Audio] speak() called but ignored (model generates audio from video)",
-                color="yellow"
+                color="yellow",
             )
 
     def send_video_frame(self, frame_data: bytes, mime_type: str = "image/png") -> None:
         """Send a video frame to the model for processing."""
         if self._debug:
             termcolor.cprint(
-                f"[Native Audio] Sending frame ({len(frame_data)} bytes)",
-                color="cyan"
+                f"[Native Audio] Sending frame ({len(frame_data)} bytes)", color="cyan"
             )
         self._presenter.send_video_frame(frame_data, mime_type)
 
@@ -212,9 +222,7 @@ class _GeminiNativeAudioSynthesizer:
             else self._config.native_audio_wait_timeout
         )
         effective_quiet = (
-            quiet_s
-            if quiet_s is not None
-            else self._config.native_audio_quiet_window
+            quiet_s if quiet_s is not None else self._config.native_audio_quiet_window
         )
         effective_no_audio = (
             no_audio_timeout
@@ -238,7 +246,10 @@ class _GeminiNativeAudioSynthesizer:
         return text.strip() + reminder
 
 
-def _create_synthesizer(config: SlideAudioConfig, token_callback: Optional[Callable[[int, int], None]] = None) -> SpeechSynthesizer:
+def _create_synthesizer(
+    config: SlideAudioConfig,
+    token_callback: Optional[Callable[[int, int], None]] = None,
+) -> SpeechSynthesizer:
     backend = config.backend.lower()
     if backend == "say":
         return _OSSaySpeechSynthesizer(config.voice, config.rate, config.debug)
@@ -260,7 +271,9 @@ class SlideAudioPresenter:
         self._page = page
         self._config = config
         self._config.validate()
-        self._status_callback = status_callback or (lambda message: termcolor.cprint(message, color="green"))
+        self._status_callback = status_callback or (
+            lambda message: termcolor.cprint(message, color="green")
+        )
         self._synthesizer = _create_synthesizer(config, token_callback)
         self._active = False
         self._last_hash: Optional[str] = None
@@ -314,7 +327,9 @@ class SlideAudioPresenter:
             )
         self._maybe_speak_payload(payload, source=source)
 
-    def _maybe_speak_payload(self, payload: Optional[dict[str, Any]], *, source: str) -> bool:
+    def _maybe_speak_payload(
+        self, payload: Optional[dict[str, Any]], *, source: str
+    ) -> bool:
         if not payload:
             return False
         if payload.get("text") is None:
@@ -324,9 +339,7 @@ class SlideAudioPresenter:
         if not text:
             return False
         if self._config.debug:
-            termcolor.cprint(
-                f"[{source}] extracted {len(text)} chars", color="yellow"
-            )
+            termcolor.cprint(f"[{source}] extracted {len(text)} chars", color="yellow")
         if len(text) < self._config.min_chars and source not in {"flash"}:
             if self._config.debug:
                 termcolor.cprint(
@@ -340,7 +353,10 @@ class SlideAudioPresenter:
         digest_input = f"{payload.get('url', self._page.url)}::{text}"
         digest = hashlib.sha1(digest_input.encode("utf-8")).hexdigest()
         now = time.time()
-        if digest == self._last_hash and (now - self._last_spoken_at) < self._config.cooldown_seconds:
+        if (
+            digest == self._last_hash
+            and (now - self._last_spoken_at) < self._config.cooldown_seconds
+        ):
             if self._config.debug:
                 termcolor.cprint(
                     f"[{source}] skipped: within cooldown window.",

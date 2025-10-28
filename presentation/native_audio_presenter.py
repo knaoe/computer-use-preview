@@ -46,29 +46,39 @@ RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 
 DEFAULT_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
-DEFAULT_SYSTEM_INSTRUCTION = """
-You are a professional presenter giving a live presentation.
 
-When you see a slide in presentation mode (full-screen), immediately speak out loud to narrate it.
-Keep your narration VERY CONCISE (1-2 sentences maximum) focusing ONLY on the key message.
 
-IMPORTANT: You MUST speak audio for every slide you see. Do not stay silent.
-When you see a slide, always generate audio narration immediately.
+def _get_default_instruction() -> str:
+    return """
+あなたはプロフェッショナルなプレゼンターです。
+現在、スライドショーのプレゼンテーションを行っています。
 
-Speak in Japanese in a natural, conversational style.
+スライドが表示されたら、以下のように発表してください：
+1. スライドの内容を読み上げるだけは避けよう。内容から考えて共感してもらえるような言葉選びで説明しよう。
+2. 自然な日本語で、聴衆に語りかけるように話す
+3. 重要なポイントを強調する
+4. 各スライドは2-3文程度で短く説明する
+5. 最後のスライドになったら挨拶して終わり
 
-STRUCTURE your narration as:
-1. Main point (1-2 sentences) - explain the key takeaway clearly and briefly
-2. Transition phrase (brief) - end with a natural connector like "では、次に参りましょう" or "続けてご覧ください"
+重要: 以下の場合は発表しないでください:
+- スライド編集画面やサムネイル表示、全画面表示モードじゃない時
+- ブラウザのナビゲーションページ (Google検索など)
+- ローディング画面
+- プレゼンテーションモードに入る前のGoogle Slides等のインターフェース
 
-CONTROL FLOW (do NOT speak these instructions):
-After you finish narrating (including the transition), call these tools in sequence:
-1. First: narration_complete (signals audio is done)
-2. Then: advance_slide (signals ready for next slide)
+プレゼンテーションモード (フルスクリーンのスライド表示) のときのみ発表してください。
 
-Always call advance_slide after narration_complete to proceed.
-Keep it brief and engaging!
+制御フロー (この指示は音声で読み上げないでください):
+ナレーションが終わったら、以下のツールを順番に呼び出してください:
+1. まず: narration_complete (音声が完了したことを通知)
+2. 次に: advance_slide (次のスライドに進む準備ができたことを通知)
+
+必ずnarration_completeの後にadvance_slideを呼び出して進めてください。
+簡潔で魅力的なプレゼンテーションを心がけましょう！
 """
+
+
+DEFAULT_SYSTEM_INSTRUCTION = _get_default_instruction()
 
 
 class NativeAudioPresenter:
@@ -202,11 +212,13 @@ class NativeAudioPresenter:
         try:
             # Check if we have real usage statistics
             real_usage_found = False
-            if self._session and hasattr(self._session, 'usage_metadata'):
+            if self._session and hasattr(self._session, "usage_metadata"):
                 usage = self._session.usage_metadata
                 if usage:
-                    input_tokens = getattr(usage, 'prompt_token_count', 0) or getattr(usage, 'total_token_count', 0)
-                    output_tokens = getattr(usage, 'candidates_token_count', 0)
+                    input_tokens = getattr(usage, "prompt_token_count", 0) or getattr(
+                        usage, "total_token_count", 0
+                    )
+                    output_tokens = getattr(usage, "candidates_token_count", 0)
                     if input_tokens > 0 or output_tokens > 0:
                         # Actual usage differs from estimates - report the difference
                         input_diff = input_tokens - self._estimated_input_tokens
@@ -225,13 +237,17 @@ class NativeAudioPresenter:
                         real_usage_found = True
 
             # Display summary of estimates if no real usage found
-            if not real_usage_found and (self._estimated_input_tokens > 0 or self._estimated_output_tokens > 0):
+            if not real_usage_found and (
+                self._estimated_input_tokens > 0 or self._estimated_output_tokens > 0
+            ):
                 termcolor.cprint(
                     f"Native Audio Session Complete: {self._estimated_input_tokens:,} input + {self._estimated_output_tokens:,} output = {self._estimated_input_tokens + self._estimated_output_tokens:,} tokens (estimated from {self._frames_sent} frames)",
                     color="green",
                 )
         except Exception as exc:
-            self._debug_print(f"Could not report token usage summary: {exc}", color="yellow")
+            self._debug_print(
+                f"Could not report token usage summary: {exc}", color="yellow"
+            )
 
     async def _shutdown(self) -> None:
         """Gracefully shutdown the async session."""
@@ -382,7 +398,23 @@ class NativeAudioPresenter:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self._debug_print(f"Session error: {e}", color="red")
+            error_msg = f"Session error: {e}"
+            self._debug_print(error_msg, color="red")
+            # Check if it's a connection closed error with policy violation
+            from websockets.exceptions import ConnectionClosedError
+
+            if isinstance(e, ConnectionClosedError):
+                if "1008" in str(e) and "policy violation" in str(e):
+                    self._debug_print(
+                        f"HINT: Model '{self._model}' may not be available. "
+                        "Check your API key, Vertex AI project settings, or try a different model name.",
+                        color="yellow",
+                        attrs=["bold"],
+                    )
+                # Mark any pending frames as complete to unblock waiters
+                with self._pending_lock:
+                    while self._pending_frames > 0:
+                        self._mark_narration_complete(source="session-error")
 
     async def _send_silence_loop(self) -> None:
         """Send periodic silent audio to keep the connection active."""
@@ -406,6 +438,16 @@ class NativeAudioPresenter:
 
             except Exception as e:
                 self._debug_print(f"Error sending silence: {e}", color="yellow")
+                # If we get a ConnectionClosedError, stop trying to send
+                from websockets.exceptions import ConnectionClosedError
+
+                if isinstance(e, ConnectionClosedError):
+                    self._debug_print(
+                        "WebSocket connection closed, stopping silence loop",
+                        color="red",
+                        attrs=["bold"],
+                    )
+                    break
                 await asyncio.sleep(1.0)
 
     async def _send_video_loop(self) -> None:
@@ -475,6 +517,16 @@ class NativeAudioPresenter:
             except Exception as e:
                 self._debug_print(f"Error sending video: {e}", color="yellow")
                 self._mark_narration_complete(source="send-error")
+                # If we get a ConnectionClosedError, stop trying to send
+                from websockets.exceptions import ConnectionClosedError
+
+                if isinstance(e, ConnectionClosedError):
+                    self._debug_print(
+                        "WebSocket connection closed, stopping send loop",
+                        color="red",
+                        attrs=["bold"],
+                    )
+                    break
 
     async def _receive_audio_loop(self) -> None:
         """Background task to receive audio from the model."""
@@ -579,9 +631,14 @@ class NativeAudioPresenter:
 
                     # Track token usage if available
                     if self._token_callback:
-                        if hasattr(response, "usage_metadata") and response.usage_metadata:
+                        if (
+                            hasattr(response, "usage_metadata")
+                            and response.usage_metadata
+                        ):
                             usage = response.usage_metadata
-                            input_tokens = getattr(usage, "prompt_token_count", 0) or getattr(usage, "total_token_count", 0)
+                            input_tokens = getattr(
+                                usage, "prompt_token_count", 0
+                            ) or getattr(usage, "total_token_count", 0)
                             output_tokens = getattr(usage, "candidates_token_count", 0)
                             if input_tokens > 0 or output_tokens > 0:
                                 try:
@@ -668,6 +725,20 @@ class NativeAudioPresenter:
                     import traceback
 
                     traceback.print_exc()
+                # If we get a ConnectionClosedError, the session is dead and we should stop
+                from websockets.exceptions import ConnectionClosedError
+
+                if isinstance(e, ConnectionClosedError):
+                    self._debug_print(
+                        "WebSocket connection closed, stopping receive loop",
+                        color="red",
+                        attrs=["bold"],
+                    )
+                    # Mark any pending frames as complete to unblock waiters
+                    with self._pending_lock:
+                        while self._pending_frames > 0:
+                            self._mark_narration_complete(source="connection-closed")
+                    break
                 if self._active:
                     await asyncio.sleep(1.0)
                 else:
