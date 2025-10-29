@@ -4,7 +4,8 @@ This fork layers slide narration upgrades on top of the official Computer Use Pr
 Gemini Native Audio Live API support for real-time, proactive narration, refreshed CLI
 options for the presenter workflow, and a streamlined flash-based fallback for macOS `say`.
 
-<blockquote class="twitter-tweet" data-media-max-width="560"><p lang="ja" dir="ltr">AIがLTやってみた <a href="https://twitter.com/hashtag/AI%E3%82%A8%E3%83%BC%E3%82%B8%E3%82%A7%E3%83%B3%E3%83%88%E5%8B%89%E5%BC%B7%E4%BC%9A?src=hash&amp;ref_src=twsrc%5Etfw">#AIエージェント勉強会</a> <a href="https://twitter.com/hashtag/%E3%82%B7%E3%83%B3%E3%82%AE%E3%83%A5%E3%83%A9%E3%83%AA%E3%83%86%E3%82%A3?src=hash&amp;ref_src=twsrc%5Etfw">#シンギュラリティ</a> <a href="https://t.co/XKXiLnHPhf">pic.twitter.com/XKXiLnHPhf</a></p>&mdash; NAOE Kenichi (@kenichiNaoe) <a href="https://twitter.com/kenichiNaoe/status/1983143882419589160?ref_src=twsrc%5Etfw">October 28, 2025</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+🎥 Watch the demo clip in this [X post](https://x.com/kenichiNaoe/status/1983143882419589160).
+[![Gemini Native Audio demo](res/demoed_at_202510.jpg)](https://x.com/kenichiNaoe/status/1983143882419589160)
 
 ## Quick Start
 
